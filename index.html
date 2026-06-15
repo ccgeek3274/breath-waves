@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b1020">
+<title>Plynulá dechová vlna</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --bg2: #131a33;
+    --accent: #57d0c8;
+    --accent2: #6aa9ff;
+    --text: #e8edf7;
+    --muted: #8a93ad;
+    --circle-scale: 0.2;      /* 0..1 expanze, řízeno z JS */
+    --progress: 0;            /* 0..1 celkový postup */
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: radial-gradient(120% 80% at 50% 0%, var(--bg2), var(--bg) 70%);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
+  }
+
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    padding: env(safe-area-inset-top) 18px env(safe-area-inset-bottom);
+    max-width: 520px;
+    margin: 0 auto;
+  }
+
+  /* ---- Horní polovina: vizuální vedení ---- */
+  .stage {
+    flex: 1 1 55%;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+  }
+
+  .circle-wrap {
+    position: relative;
+    width: 80vw;
+    max-width: 360px;
+    aspect-ratio: 1 / 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .ring-track {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .circle {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    /* mapujeme expanzi 0..1 na měřítko 0.2..0.85 */
+    transform: scale(calc(0.2 + var(--circle-scale) * 0.65));
+    background: radial-gradient(circle at 50% 40%,
+                  rgba(106,169,255,0.55),
+                  rgba(87,208,200,0.30) 55%,
+                  rgba(87,208,200,0.0) 72%);
+    box-shadow: 0 0 60px rgba(87,208,200, calc(0.15 + var(--circle-scale) * 0.45));
+    will-change: transform;
+  }
+
+  .circle-core {
+    position: absolute;
+    width: 100%; height: 100%;
+    border-radius: 50%;
+    transform: scale(calc(0.2 + var(--circle-scale) * 0.65));
+    border: 2px solid rgba(87,208,200,0.85);
+    will-change: transform;
+  }
+
+  .phase-text {
+    position: relative;
+    z-index: 2;
+    text-align: center;
+    pointer-events: none;
+  }
+  .phase-label {
+    font-size: clamp(22px, 7vw, 34px);
+    font-weight: 300;
+    letter-spacing: 0.04em;
+    opacity: 0.95;
+  }
+  .phase-count {
+    margin-top: 6px;
+    font-size: clamp(13px, 4vw, 16px);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- Střední část: informace ---- */
+  .info {
+    flex: 0 0 auto;
+    padding: 8px 4px 14px;
+  }
+  .progress {
+    height: 6px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.08);
+    overflow: hidden;
+  }
+  .progress > span {
+    display: block;
+    height: 100%;
+    width: calc(var(--progress) * 100%);
+    background: linear-gradient(90deg, var(--accent2), var(--accent));
+    border-radius: 6px;
+    transition: width 0.1s linear;
+  }
+  .status {
+    margin-top: 10px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    min-height: 1.2em;
+  }
+
+  /* ---- Spodní polovina: ovládání + konfigurace ---- */
+  .controls {
+    flex: 0 0 auto;
+    padding-bottom: 6px;
+  }
+  .row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .btn {
+    flex: 1;
+    border: none;
+    border-radius: 16px;
+    padding: 18px;
+    font-size: 18px;
+    font-weight: 600;
+    color: #06121a;
+    background: linear-gradient(90deg, var(--accent2), var(--accent));
+    cursor: pointer;
+    transition: transform 0.08s ease, opacity 0.2s ease;
+  }
+  .btn:active { transform: scale(0.98); }
+  .btn.stop {
+    background: rgba(255,255,255,0.10);
+    color: var(--text);
+  }
+  .gear {
+    flex: 0 0 auto;
+    width: 56px; height: 56px;
+    border-radius: 16px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.05);
+    color: var(--text);
+    font-size: 22px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: transform 0.08s ease;
+  }
+  .gear:active { transform: scale(0.96); }
+
+  .config {
+    margin-top: 14px;
+    overflow: hidden;
+    max-height: 0;
+    transition: max-height 0.35s ease, opacity 0.25s ease;
+    opacity: 0;
+  }
+  .config.open { max-height: 640px; opacity: 1; }
+
+  .field { margin: 14px 2px; }
+  .field label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 14px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .field label b { color: var(--text); font-weight: 600; }
+
+  input[type="range"] {
+    width: 100%;
+    -webkit-appearance: none; appearance: none;
+    height: 4px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.14);
+    outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 4px rgba(87,208,200,0.18);
+    cursor: pointer;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 22px; height: 22px; border: none; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 4px rgba(87,208,200,0.18);
+    cursor: pointer;
+  }
+  input[type="range"]:disabled { opacity: 0.4; }
+
+  .muteline {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 14px; color: var(--muted);
+    margin: 4px 2px;
+  }
+  .switch { position: relative; width: 46px; height: 26px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider-sw {
+    position: absolute; inset: 0; cursor: pointer;
+    background: rgba(255,255,255,0.14); border-radius: 26px;
+    transition: 0.2s;
+  }
+  .slider-sw::before {
+    content: ""; position: absolute; height: 20px; width: 20px;
+    left: 3px; top: 3px; background: #fff; border-radius: 50%;
+    transition: 0.2s;
+  }
+  .switch input:checked + .slider-sw { background: var(--accent); }
+  .switch input:checked + .slider-sw::before { transform: translateX(20px); }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Horní polovina -->
+  <div class="stage">
+    <div class="circle-wrap">
+      <div class="ring-track"></div>
+      <div class="circle"></div>
+      <div class="circle-core"></div>
+      <div class="phase-text">
+        <div class="phase-label" id="phaseLabel">Připraveno</div>
+        <div class="phase-count" id="phaseCount"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Střední část -->
+  <div class="info">
+    <div class="progress"><span></span></div>
+    <div class="status" id="status">Nastav parametry a stiskni Start</div>
+  </div>
+
+  <!-- Spodní polovina -->
+  <div class="controls">
+    <div class="row">
+      <button class="btn" id="startBtn">Start</button>
+      <button class="gear" id="gearBtn" aria-label="Nastavení">⚙</button>
+    </div>
+
+    <div class="config" id="config">
+      <div class="field">
+        <label>Počáteční délka vlny <b><span id="tStartVal">8</span> s</b></label>
+        <input type="range" id="tStart" min="4" max="20" step="0.5" value="8">
+      </div>
+      <div class="field">
+        <label>Cílová délka vlny <b><span id="tEndVal">15</span> s</b></label>
+        <input type="range" id="tEnd" min="6" max="30" step="0.5" value="15">
+      </div>
+      <div class="field">
+        <label>Poměr nádech : výdech <b>1 : <span id="ratioVal">2</span></b></label>
+        <input type="range" id="ratio" min="1" max="3" step="0.25" value="2">
+      </div>
+      <div class="field">
+        <label>Zahřívací fáze <b><span id="warmVal">2:00</span></b></label>
+        <input type="range" id="warm" min="0" max="600" step="10" value="120">
+      </div>
+      <div class="field">
+        <label>Aktivní fáze <b><span id="activeVal">8</span> min</b></label>
+        <input type="range" id="active" min="1" max="20" step="1" value="8">
+      </div>
+      <div class="muteline">
+        <span>Zvuk (tónový biofeedback)</span>
+        <label class="switch">
+          <input type="checkbox" id="soundOn" checked>
+          <span class="slider-sw"></span>
+        </label>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------- Stavový automat ----------
+  const STATE = { IDLE: "IDLE", WARMUP: "WARMUP", ACTIVE: "ACTIVE", FINISHED: "FINISHED" };
+
+  const cfg = {
+    tStart: 8,     // s
+    tEnd: 15,      // s
+    ratio: 2,      // nádech:výdech = 1:ratio
+    warm: 120,     // s
+    active: 8,     // min
+    sound: true,
+  };
+
+  const els = {
+    phaseLabel: document.getElementById("phaseLabel"),
+    phaseCount: document.getElementById("phaseCount"),
+    status: document.getElementById("status"),
+    startBtn: document.getElementById("startBtn"),
+    gearBtn: document.getElementById("gearBtn"),
+    config: document.getElementById("config"),
+    tStart: document.getElementById("tStart"),
+    tEnd: document.getElementById("tEnd"),
+    ratio: document.getElementById("ratio"),
+    warm: document.getElementById("warm"),
+    active: document.getElementById("active"),
+    soundOn: document.getElementById("soundOn"),
+    tStartVal: document.getElementById("tStartVal"),
+    tEndVal: document.getElementById("tEndVal"),
+    ratioVal: document.getElementById("ratioVal"),
+    warmVal: document.getElementById("warmVal"),
+    activeVal: document.getElementById("activeVal"),
+  };
+  const root = document.documentElement;
+
+  // ---------- Perzistence (localStorage) ----------
+  const LS_KEY = "breath-wave-cfg-v1";
+  function loadCfg() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+      Object.assign(cfg, saved);
+    } catch (e) { /* ignorujeme poškozená data */ }
+  }
+  function saveCfg() {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {}
+  }
+
+  // ---------- Pomocné výpočty ----------
+  // Easing pro dýchání: hladké zrychlení a zpomalení na obou koncích.
+  const easeInOut = (p) => (1 - Math.cos(Math.PI * Math.max(0, Math.min(1, p)))) / 2;
+
+  function fmtMMSS(totalSec) {
+    const s = Math.max(0, Math.round(totalSec));
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m + ":" + String(r).padStart(2, "0");
+  }
+
+  // Vrátí délku vlny (s) podle uplynulého času od startu cvičení.
+  function currentWaveLen(elapsed) {
+    const warm = cfg.warm;
+    const active = cfg.active * 60;
+    if (elapsed < warm) return cfg.tStart;                       // konstantní
+    const p = active > 0 ? Math.min(1, (elapsed - warm) / active) : 1;
+    return cfg.tStart + (cfg.tEnd - cfg.tStart) * p;             // lineární
+  }
+
+  // ---------- Audio (Web Audio API) ----------
+  let audioCtx = null, osc = null, gain = null, lp = null;
+  const BASE_FREQ = 220;   // A3
+  const PEAK_FREQ = 330;   // E4 (čistá kvinta)
+  const MAX_GAIN = 0.12;
+
+  function startAudio() {
+    if (!cfg.sound) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    osc = audioCtx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.value = BASE_FREQ;
+
+    lp = audioCtx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 1200;   // změkčení, aby zvuk netahal za uši
+
+    gain = audioCtx.createGain();
+    gain.gain.value = 0;
+
+    osc.connect(lp).connect(gain).connect(audioCtx.destination);
+    osc.start();
+  }
+
+  function stopAudio() {
+    if (!audioCtx) return;
+    const t = audioCtx.currentTime;
+    try {
+      gain.gain.cancelScheduledValues(t);
+      gain.gain.setValueAtTime(gain.gain.value, t);
+      gain.gain.linearRampToValueAtTime(0, t + 0.2);
+      osc.stop(t + 0.25);
+    } catch (e) {}
+    const ctx = audioCtx;
+    setTimeout(() => { try { ctx.close(); } catch (e) {} }, 400);
+    audioCtx = osc = gain = lp = null;
+  }
+
+  // expansion 0..1, inhaling bool — řídí frekvenci i hlasitost
+  function updateAudio(expansion, running) {
+    if (!audioCtx) return;
+    const t = audioCtx.currentTime;
+    const freq = BASE_FREQ + (PEAK_FREQ - BASE_FREQ) * expansion;
+    osc.frequency.setTargetAtTime(freq, t, 0.02);
+    // Jemný fade na krajích dechu (u dna expanze ztlumit), ať to "neklikne".
+    const env = Math.min(1, easeInOut(Math.min(expansion * 3, 1)) + 0.15);
+    const target = running ? MAX_GAIN * env : 0;
+    gain.gain.setTargetAtTime(target, t, 0.04);
+  }
+
+  // ---------- Běh cvičení ----------
+  let state = STATE.IDLE;
+  let rafId = null;
+  let startTime = 0;       // ms, performance.now při startu
+  let breathPhase = 0;     // 0..1 pozice v rámci aktuální vlny
+  let lastFrame = 0;
+
+  function totalDuration() { return cfg.warm + cfg.active * 60; }
+
+  function setExpansion(x) { root.style.setProperty("--circle-scale", x.toFixed(4)); }
+  function setProgress(p) { root.style.setProperty("--progress", p.toFixed(4)); }
+
+  function frame(now) {
+    if (state !== STATE.WARMUP && state !== STATE.ACTIVE) return;
+
+    const dt = Math.min(0.1, (now - lastFrame) / 1000); // s; cap proti skokům
+    lastFrame = now;
+    const elapsed = (now - startTime) / 1000;
+    const total = totalDuration();
+
+    // Konec cvičení
+    if (elapsed >= total) { finish(); return; }
+
+    // Přepnutí WARMUP -> ACTIVE
+    state = elapsed < cfg.warm ? STATE.WARMUP : STATE.ACTIVE;
+
+    const T = currentWaveLen(elapsed);
+    const inhaleFrac = 1 / (1 + cfg.ratio);  // podíl vlny připadající na nádech
+
+    // Posun fáze rychlostí odpovídající aktuální délce vlny.
+    breathPhase += dt / T;
+    if (breathPhase >= 1) breathPhase -= 1;
+
+    let inhaling, segProgress, expansion;
+    if (breathPhase < inhaleFrac) {
+      inhaling = true;
+      segProgress = breathPhase / inhaleFrac;       // 0..1 v rámci nádechu
+      expansion = easeInOut(segProgress);
+    } else {
+      inhaling = false;
+      segProgress = (breathPhase - inhaleFrac) / (1 - inhaleFrac);
+      expansion = easeInOut(1 - segProgress);
+    }
+
+    setExpansion(expansion);
+    setProgress(elapsed / total);
+    updateAudio(expansion, true);
+
+    // Texty
+    const inhaleLen = T * inhaleFrac;
+    const exhaleLen = T - inhaleLen;
+    const segLen = inhaling ? inhaleLen : exhaleLen;
+    const remaining = segLen * (1 - segProgress);
+    els.phaseLabel.textContent = inhaling ? "Nádech" : "Výdech";
+    els.phaseCount.textContent = remaining.toFixed(1) + " s";
+
+    const phaseName = state === STATE.WARMUP ? "Zahřívání" : "Aktivní fáze";
+    els.status.textContent =
+      phaseName + " · dech " + T.toFixed(1) + " s (" +
+      inhaleLen.toFixed(1) + "s / " + exhaleLen.toFixed(1) + "s) · zbývá " +
+      fmtMMSS(total - elapsed);
+
+    rafId = requestAnimationFrame(frame);
+  }
+
+  function start() {
+    loadFromInputs();
+    saveCfg();
+    state = cfg.warm > 0 ? STATE.WARMUP : STATE.ACTIVE;
+    breathPhase = 0;
+    startTime = performance.now();
+    lastFrame = startTime;
+    startAudio();
+    els.startBtn.textContent = "Stop";
+    els.startBtn.classList.add("stop");
+    setInputsDisabled(true);
+    closeConfig();
+    rafId = requestAnimationFrame(frame);
+  }
+
+  function stop(finished) {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = null;
+    stopAudio();
+    state = finished ? STATE.FINISHED : STATE.IDLE;
+    els.startBtn.textContent = "Start";
+    els.startBtn.classList.remove("stop");
+    setInputsDisabled(false);
+    setExpansion(0);
+    els.phaseCount.textContent = "";
+    if (finished) {
+      els.phaseLabel.textContent = "Hotovo";
+      els.status.textContent = "Cvičení dokončeno 🌿";
+      setProgress(1);
+    } else {
+      els.phaseLabel.textContent = "Připraveno";
+      els.status.textContent = "Nastav parametry a stiskni Start";
+      setProgress(0);
+    }
+  }
+
+  function finish() { stop(true); }
+
+  function toggle() {
+    if (state === STATE.WARMUP || state === STATE.ACTIVE) stop(false);
+    else start();
+  }
+
+  // ---------- Konfigurace / UI ----------
+  function loadFromInputs() {
+    cfg.tStart = parseFloat(els.tStart.value);
+    cfg.tEnd = parseFloat(els.tEnd.value);
+    cfg.ratio = parseFloat(els.ratio.value);
+    cfg.warm = parseFloat(els.warm.value);
+    cfg.active = parseFloat(els.active.value);
+    cfg.sound = els.soundOn.checked;
+  }
+
+  function applyCfgToInputs() {
+    els.tStart.value = cfg.tStart;
+    els.tEnd.value = cfg.tEnd;
+    els.ratio.value = cfg.ratio;
+    els.warm.value = cfg.warm;
+    els.active.value = cfg.active;
+    els.soundOn.checked = cfg.sound;
+    refreshLabels();
+  }
+
+  function refreshLabels() {
+    els.tStartVal.textContent = parseFloat(els.tStart.value).toFixed(1).replace(/\.0$/, "");
+    els.tEndVal.textContent = parseFloat(els.tEnd.value).toFixed(1).replace(/\.0$/, "");
+    els.ratioVal.textContent = parseFloat(els.ratio.value).toFixed(2).replace(/\.?0+$/, "");
+    els.warmVal.textContent = fmtMMSS(parseFloat(els.warm.value));
+    els.activeVal.textContent = els.active.value;
+  }
+
+  function setInputsDisabled(d) {
+    [els.tStart, els.tEnd, els.ratio, els.warm, els.active, els.soundOn]
+      .forEach(i => i.disabled = d);
+  }
+
+  function closeConfig() { els.config.classList.remove("open"); }
+  function toggleConfig() {
+    if (state === STATE.WARMUP || state === STATE.ACTIVE) return; // při běhu neměníme
+    els.config.classList.toggle("open");
+  }
+
+  // ---------- Eventy ----------
+  [els.tStart, els.tEnd, els.ratio, els.warm, els.active].forEach(inp => {
+    inp.addEventListener("input", () => {
+      // tStart nesmí přesáhnout tEnd (jinak by se vlna zkracovala)
+      if (parseFloat(els.tEnd.value) < parseFloat(els.tStart.value)) {
+        if (inp === els.tStart) els.tEnd.value = els.tStart.value;
+        else els.tStart.value = els.tEnd.value;
+      }
+      refreshLabels();
+      loadFromInputs();
+      saveCfg();
+    });
+  });
+  els.soundOn.addEventListener("change", () => { loadFromInputs(); saveCfg(); });
+  els.startBtn.addEventListener("click", toggle);
+  els.gearBtn.addEventListener("click", toggleConfig);
+
+  // ---------- Init ----------
+  loadCfg();
+  applyCfgToInputs();
+  setExpansion(0);
+})();
+</script>
+</body>
+</html>
