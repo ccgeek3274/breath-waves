@@ -284,8 +284,12 @@
         <input type="range" id="tEnd" min="6" max="30" step="0.5" value="15">
       </div>
       <div class="field">
-        <label>Poměr nádech : výdech <b>1 : <span id="ratioVal">2</span></b></label>
-        <input type="range" id="ratio" min="1" max="3" step="0.25" value="2">
+        <label>Počáteční poměr nádech : výdech <b>1 : <span id="ratioStartVal">1.5</span></b></label>
+        <input type="range" id="ratioStart" min="1" max="3" step="0.25" value="1.5">
+      </div>
+      <div class="field">
+        <label>Cílový poměr nádech : výdech <b>1 : <span id="ratioEndVal">1.5</span></b></label>
+        <input type="range" id="ratioEnd" min="1" max="3" step="0.25" value="1.5">
       </div>
       <div class="field">
         <label>Zahřívací fáze <b><span id="warmVal">2:00</span></b></label>
@@ -294,6 +298,10 @@
       <div class="field">
         <label>Aktivní fáze <b><span id="activeVal">8</span> min</b></label>
         <input type="range" id="active" min="1" max="20" step="1" value="8">
+      </div>
+      <div class="field">
+        <label>Držák na konec (drží finální parametry) <b><span id="holdVal">vypnuto</span></b></label>
+        <input type="range" id="hold" min="0" max="10" step="0.5" value="0">
       </div>
       <div class="muteline">
         <span>Zvuk (tónový biofeedback)</span>
@@ -312,14 +320,16 @@
   "use strict";
 
   // ---------- Stavový automat ----------
-  const STATE = { IDLE: "IDLE", WARMUP: "WARMUP", ACTIVE: "ACTIVE", FINISHED: "FINISHED" };
+  const STATE = { IDLE: "IDLE", WARMUP: "WARMUP", ACTIVE: "ACTIVE", HOLD: "HOLD", FINISHED: "FINISHED" };
 
   const cfg = {
-    tStart: 8,     // s
-    tEnd: 15,      // s
-    ratio: 2,      // nádech:výdech = 1:ratio
-    warm: 120,     // s
-    active: 8,     // min
+    tStart: 8,        // s
+    tEnd: 15,         // s
+    ratioStart: 1.5,  // nádech:výdech = 1:ratioStart (počátek)
+    ratioEnd: 1.5,    // nádech:výdech = 1:ratioEnd (konec aktivní fáze)
+    warm: 120,        // s
+    active: 8,        // min
+    hold: 0,          // min – držák na konec (drží finální parametry); 0 = vypnuto
     sound: true,
   };
 
@@ -332,20 +342,24 @@
     config: document.getElementById("config"),
     tStart: document.getElementById("tStart"),
     tEnd: document.getElementById("tEnd"),
-    ratio: document.getElementById("ratio"),
+    ratioStart: document.getElementById("ratioStart"),
+    ratioEnd: document.getElementById("ratioEnd"),
     warm: document.getElementById("warm"),
     active: document.getElementById("active"),
+    hold: document.getElementById("hold"),
     soundOn: document.getElementById("soundOn"),
     tStartVal: document.getElementById("tStartVal"),
     tEndVal: document.getElementById("tEndVal"),
-    ratioVal: document.getElementById("ratioVal"),
+    ratioStartVal: document.getElementById("ratioStartVal"),
+    ratioEndVal: document.getElementById("ratioEndVal"),
     warmVal: document.getElementById("warmVal"),
     activeVal: document.getElementById("activeVal"),
+    holdVal: document.getElementById("holdVal"),
   };
   const root = document.documentElement;
 
   // ---------- Perzistence (localStorage) ----------
-  const LS_KEY = "breath-wave-cfg-v1";
+  const LS_KEY = "breath-wave-cfg-v2";
   function loadCfg() {
     try {
       const saved = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
@@ -371,9 +385,20 @@
   function currentWaveLen(elapsed) {
     const warm = cfg.warm;
     const active = cfg.active * 60;
-    if (elapsed < warm) return cfg.tStart;                       // konstantní
-    const p = active > 0 ? Math.min(1, (elapsed - warm) / active) : 1;
-    return cfg.tStart + (cfg.tEnd - cfg.tStart) * p;             // lineární
+    if (elapsed < warm) return cfg.tStart;                       // zahřívání: konstantní
+    if (elapsed >= warm + active) return cfg.tEnd;               // držák: finální hodnota
+    const p = active > 0 ? (elapsed - warm) / active : 1;
+    return cfg.tStart + (cfg.tEnd - cfg.tStart) * p;             // aktivní: lineární
+  }
+
+  // Vrátí aktuální poměr (1:ratio) – v aktivní fázi se lineárně mění z ratioStart na ratioEnd.
+  function currentRatio(elapsed) {
+    const warm = cfg.warm;
+    const active = cfg.active * 60;
+    if (elapsed < warm) return cfg.ratioStart;                   // zahřívání
+    if (elapsed >= warm + active) return cfg.ratioEnd;           // držák
+    const p = active > 0 ? (elapsed - warm) / active : 1;
+    return cfg.ratioStart + (cfg.ratioEnd - cfg.ratioStart) * p; // aktivní
   }
 
   // ---------- Audio (Web Audio API) ----------
@@ -433,13 +458,16 @@
   let breathPhase = 0;     // 0..1 pozice v rámci aktuální vlny
   let lastFrame = 0;
 
-  function totalDuration() { return cfg.warm + cfg.active * 60; }
+  function totalDuration() { return cfg.warm + cfg.active * 60 + cfg.hold * 60; }
+  function isRunning() {
+    return state === STATE.WARMUP || state === STATE.ACTIVE || state === STATE.HOLD;
+  }
 
   function setExpansion(x) { root.style.setProperty("--circle-scale", x.toFixed(4)); }
   function setProgress(p) { root.style.setProperty("--progress", p.toFixed(4)); }
 
   function frame(now) {
-    if (state !== STATE.WARMUP && state !== STATE.ACTIVE) return;
+    if (!isRunning()) return;
 
     const dt = Math.min(0.1, (now - lastFrame) / 1000); // s; cap proti skokům
     lastFrame = now;
@@ -449,11 +477,14 @@
     // Konec cvičení
     if (elapsed >= total) { finish(); return; }
 
-    // Přepnutí WARMUP -> ACTIVE
-    state = elapsed < cfg.warm ? STATE.WARMUP : STATE.ACTIVE;
+    // Přepnutí fází: WARMUP -> ACTIVE -> HOLD
+    const activeEnd = cfg.warm + cfg.active * 60;
+    state = elapsed < cfg.warm ? STATE.WARMUP
+          : elapsed < activeEnd ? STATE.ACTIVE
+          : STATE.HOLD;
 
     const T = currentWaveLen(elapsed);
-    const inhaleFrac = 1 / (1 + cfg.ratio);  // podíl vlny připadající na nádech
+    const inhaleFrac = 1 / (1 + currentRatio(elapsed));  // podíl vlny připadající na nádech
 
     // Posun fáze rychlostí odpovídající aktuální délce vlny.
     breathPhase += dt / T;
@@ -477,12 +508,11 @@
     // Texty
     const inhaleLen = T * inhaleFrac;
     const exhaleLen = T - inhaleLen;
-    const segLen = inhaling ? inhaleLen : exhaleLen;
-    const remaining = segLen * (1 - segProgress);
     els.phaseLabel.textContent = inhaling ? "Nádech" : "Výdech";
-    els.phaseCount.textContent = remaining.toFixed(1) + " s";
+    els.phaseCount.textContent = T.toFixed(1) + " s";   // aktuální délka vlny
 
-    const phaseName = state === STATE.WARMUP ? "Zahřívání" : "Aktivní fáze";
+    const phaseName = state === STATE.WARMUP ? "Zahřívání"
+                    : state === STATE.HOLD ? "Držák" : "Aktivní fáze";
     els.status.textContent =
       phaseName + " · dech " + T.toFixed(1) + " s (" +
       inhaleLen.toFixed(1) + "s / " + exhaleLen.toFixed(1) + "s) · zbývá " +
@@ -532,7 +562,7 @@
   function finish() { stop(true); }
 
   function toggle() {
-    if (state === STATE.WARMUP || state === STATE.ACTIVE) stop(false);
+    if (isRunning()) stop(false);
     else start();
   }
 
@@ -540,18 +570,22 @@
   function loadFromInputs() {
     cfg.tStart = parseFloat(els.tStart.value);
     cfg.tEnd = parseFloat(els.tEnd.value);
-    cfg.ratio = parseFloat(els.ratio.value);
+    cfg.ratioStart = parseFloat(els.ratioStart.value);
+    cfg.ratioEnd = parseFloat(els.ratioEnd.value);
     cfg.warm = parseFloat(els.warm.value);
     cfg.active = parseFloat(els.active.value);
+    cfg.hold = parseFloat(els.hold.value);
     cfg.sound = els.soundOn.checked;
   }
 
   function applyCfgToInputs() {
     els.tStart.value = cfg.tStart;
     els.tEnd.value = cfg.tEnd;
-    els.ratio.value = cfg.ratio;
+    els.ratioStart.value = cfg.ratioStart;
+    els.ratioEnd.value = cfg.ratioEnd;
     els.warm.value = cfg.warm;
     els.active.value = cfg.active;
+    els.hold.value = cfg.hold;
     els.soundOn.checked = cfg.sound;
     refreshLabels();
   }
@@ -559,24 +593,27 @@
   function refreshLabels() {
     els.tStartVal.textContent = parseFloat(els.tStart.value).toFixed(1).replace(/\.0$/, "");
     els.tEndVal.textContent = parseFloat(els.tEnd.value).toFixed(1).replace(/\.0$/, "");
-    els.ratioVal.textContent = parseFloat(els.ratio.value).toFixed(2).replace(/\.?0+$/, "");
+    els.ratioStartVal.textContent = parseFloat(els.ratioStart.value).toFixed(2).replace(/\.?0+$/, "");
+    els.ratioEndVal.textContent = parseFloat(els.ratioEnd.value).toFixed(2).replace(/\.?0+$/, "");
     els.warmVal.textContent = fmtMMSS(parseFloat(els.warm.value));
     els.activeVal.textContent = els.active.value;
+    const hold = parseFloat(els.hold.value);
+    els.holdVal.textContent = hold > 0 ? fmtMMSS(hold * 60) : "vypnuto";
   }
 
   function setInputsDisabled(d) {
-    [els.tStart, els.tEnd, els.ratio, els.warm, els.active, els.soundOn]
+    [els.tStart, els.tEnd, els.ratioStart, els.ratioEnd, els.warm, els.active, els.hold, els.soundOn]
       .forEach(i => i.disabled = d);
   }
 
   function closeConfig() { els.config.classList.remove("open"); }
   function toggleConfig() {
-    if (state === STATE.WARMUP || state === STATE.ACTIVE) return; // při běhu neměníme
+    if (isRunning()) return; // při běhu neměníme
     els.config.classList.toggle("open");
   }
 
   // ---------- Eventy ----------
-  [els.tStart, els.tEnd, els.ratio, els.warm, els.active].forEach(inp => {
+  [els.tStart, els.tEnd, els.ratioStart, els.ratioEnd, els.warm, els.active, els.hold].forEach(inp => {
     inp.addEventListener("input", () => {
       // tStart nesmí přesáhnout tEnd (jinak by se vlna zkracovala)
       if (parseFloat(els.tEnd.value) < parseFloat(els.tStart.value)) {
@@ -610,8 +647,7 @@
   // iOS lock automaticky uvolní při minimalizaci/přepnutí tabu → po návratu znovu vyžádat,
   // ale jen pokud cvičení stále běží.
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" &&
-        (state === STATE.WARMUP || state === STATE.ACTIVE)) {
+    if (document.visibilityState === "visible" && isRunning()) {
       requestWakeLock();
     }
   });
