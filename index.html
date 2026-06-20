@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0b1020">
+<!-- iOS standalone (Add to Home Screen) – iPhone neumí requestFullscreen, tohle je jediná cesta k celé obrazovce -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Dech">
 <title>Plynulá dechová vlna</title>
 <style>
   :root {
@@ -494,6 +499,7 @@
     startTime = performance.now();
     lastFrame = startTime;
     startAudio();
+    requestWakeLock();
     els.startBtn.textContent = "Stop";
     els.startBtn.classList.add("stop");
     setInputsDisabled(true);
@@ -505,6 +511,7 @@
     if (rafId) cancelAnimationFrame(rafId);
     rafId = null;
     stopAudio();
+    releaseWakeLock();
     state = finished ? STATE.FINISHED : STATE.IDLE;
     els.startBtn.textContent = "Start";
     els.startBtn.classList.remove("stop");
@@ -585,10 +592,81 @@
   els.startBtn.addEventListener("click", toggle);
   els.gearBtn.addEventListener("click", toggleConfig);
 
+  // ---------- Screen Wake Lock (zabránit usnutí displeje) ----------
+  let wakeLock = null;
+  async function requestWakeLock() {
+    if (!("wakeLock" in navigator)) return; // starší iOS < 16.4 / nepodporováno
+    try {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+    } catch (e) {
+      // NotAllowedError, nízká baterie, stránka není viditelná – tiše ignorujeme
+    }
+  }
+  async function releaseWakeLock() {
+    try { if (wakeLock) await wakeLock.release(); } catch (e) {}
+    wakeLock = null;
+  }
+  // iOS lock automaticky uvolní při minimalizaci/přepnutí tabu → po návratu znovu vyžádat,
+  // ale jen pokud cvičení stále běží.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" &&
+        (state === STATE.WARMUP || state === STATE.ACTIVE)) {
+      requestWakeLock();
+    }
+  });
+
+  // ---------- PWA: ikona generovaná přes canvas + runtime manifest (zachová single-file) ----------
+  function makeIcon(size) {
+    const c = document.createElement("canvas");
+    c.width = c.height = size;
+    const x = c.getContext("2d");
+    x.fillStyle = "#0b1020";
+    x.fillRect(0, 0, size, size);
+    const g = x.createRadialGradient(size/2, size*0.42, size*0.04, size/2, size/2, size*0.34);
+    g.addColorStop(0, "#6aa9ff");
+    g.addColorStop(0.6, "#57d0c8");
+    g.addColorStop(1, "rgba(87,208,200,0)");
+    x.fillStyle = g;
+    x.beginPath(); x.arc(size/2, size/2, size*0.32, 0, Math.PI*2); x.fill();
+    x.strokeStyle = "#57d0c8";
+    x.lineWidth = Math.max(1, size*0.018);
+    x.beginPath(); x.arc(size/2, size/2, size*0.32, 0, Math.PI*2); x.stroke();
+    return c.toDataURL("image/png");
+  }
+  function setupPWA() {
+    try {
+      const addLink = (rel, href, extra) => {
+        const l = document.createElement("link");
+        l.rel = rel; l.href = href;
+        if (extra) Object.assign(l, extra);
+        document.head.appendChild(l);
+      };
+      addLink("apple-touch-icon", makeIcon(180));
+      addLink("icon", makeIcon(64), { type: "image/png" });
+      const manifest = {
+        name: "Plynulá dechová vlna",
+        short_name: "Dech",
+        display: "standalone",
+        orientation: "portrait",
+        background_color: "#0b1020",
+        theme_color: "#0b1020",
+        start_url: location.href,
+        icons: [
+          { src: makeIcon(192), sizes: "192x192", type: "image/png" },
+          { src: makeIcon(512), sizes: "512x512", type: "image/png", purpose: "any maskable" },
+        ],
+      };
+      const blob = new Blob([JSON.stringify(manifest)], { type: "application/manifest+json" });
+      addLink("manifest", URL.createObjectURL(blob));
+    } catch (e) { /* canvas/Blob nedostupné – appka funguje i bez instalace */ }
+  }
+
   // ---------- Init ----------
   loadCfg();
   applyCfgToInputs();
   setExpansion(0);
+  setupPWA();
 })();
 </script>
 </body>
