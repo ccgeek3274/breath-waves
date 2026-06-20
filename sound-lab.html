@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zvuková laboratoř – dechové enginy</title>
+<style>
+  :root{ --bg:#0b1020; --bg2:#131a33; --accent:#57d0c8; --accent2:#6aa9ff; --text:#e8edf7; --muted:#8a93ad; }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; padding:24px 16px 60px; min-height:100vh;
+    background:radial-gradient(120% 80% at 50% 0%, var(--bg2), var(--bg) 70%);
+    color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    max-width:680px; margin:0 auto;
+  }
+  h1{ font-weight:300; font-size:24px; letter-spacing:.02em; }
+  p.lead{ color:var(--muted); font-size:14px; line-height:1.5; }
+
+  .breath{
+    position:sticky; top:0; z-index:5; background:rgba(11,16,32,.92);
+    backdrop-filter:blur(8px); padding:14px 14px; border-radius:16px;
+    border:1px solid rgba(255,255,255,.08); margin:16px 0 26px;
+  }
+  .breath .barwrap{ height:10px; border-radius:8px; background:rgba(255,255,255,.08); overflow:hidden; margin:10px 0; }
+  .breath .bar{ height:100%; width:20%; border-radius:8px; background:linear-gradient(90deg,var(--accent2),var(--accent)); }
+  .breath .ctl{ display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-size:13px; color:var(--muted); }
+  .phase{ font-size:13px; color:var(--text); min-width:70px; }
+
+  .card{
+    background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08);
+    border-radius:16px; padding:18px; margin:16px 0;
+  }
+  .card h2{ margin:0 0 6px; font-size:18px; font-weight:500; }
+  .card .tag{ font-size:11px; color:var(--accent); letter-spacing:.08em; text-transform:uppercase; }
+  .card p{ color:var(--muted); font-size:13px; line-height:1.5; margin:8px 0 14px; }
+
+  button{
+    border:none; border-radius:12px; padding:12px 20px; font-size:15px; font-weight:600;
+    color:#06121a; background:linear-gradient(90deg,var(--accent2),var(--accent)); cursor:pointer;
+  }
+  button.on{ background:rgba(255,255,255,.12); color:var(--text); }
+  button:active{ transform:scale(.98); }
+
+  input[type=range]{ -webkit-appearance:none; appearance:none; height:4px; border-radius:4px;
+    background:rgba(255,255,255,.16); outline:none; flex:1; min-width:120px; }
+  input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:20px; height:20px; border-radius:50%;
+    background:var(--accent); box-shadow:0 0 0 4px rgba(87,208,200,.18); cursor:pointer; }
+  label.sw{ display:inline-flex; align-items:center; gap:8px; cursor:pointer; }
+
+  .meter{ font-size:12px; color:var(--muted); margin-top:10px; font-variant-numeric:tabular-nums; }
+  code{ background:rgba(255,255,255,.07); padding:1px 5px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+  <h1>🌊 Zvuková laboratoř</h1>
+  <p class="lead">Tři varianty dechového zvuku ve Web Audio API. Spusť libovolný engine a hýbej
+  „dechem" – slyšíš, jak se zvuk otevírá při nádechu (expanze&nbsp;→&nbsp;1) a tlumí při výdechu
+  (→&nbsp;0). Každý engine má rozhraní <code>start() / update(e) / stop()</code>, takže vybraný
+  přeneseš do appky 1:1.</p>
+
+  <!-- Sdílený ovladač dechu -->
+  <div class="breath">
+    <div class="ctl">
+      <span class="phase" id="phase">Výdech</span>
+      <input type="range" id="breathSlider" min="0" max="1" step="0.001" value="0.2">
+    </div>
+    <div class="barwrap"><div class="bar" id="bar"></div></div>
+    <div class="ctl">
+      <label class="sw"><input type="checkbox" id="autoBreath" checked> Auto dech</label>
+      <span>perioda</span>
+      <input type="range" id="period" min="3" max="14" step="0.5" value="7">
+      <span id="periodVal">7.0 s</span>
+    </div>
+  </div>
+
+  <!-- 1. Subtraktivní -->
+  <div class="card">
+    <div class="tag">1 · Subtraktivní syntéza</div>
+    <h2>🌊 Mořská vlna / vítr (šum + bandpass)</h2>
+    <p>Růžový šum z bufferu prožený rezonančním <code>bandpass</code> filtrem. Dech posouvá
+    cutoff filtru nahoru/dolů (zvuk se rozjasňuje a tlumí) + jemné zesílení na vrcholu nádechu.</p>
+    <button data-engine="sea">Start</button>
+    <div class="meter" id="meter-sea"></div>
+  </div>
+
+  <!-- 2. Aditivní -->
+  <div class="card">
+    <div class="tag">2 · Aditivní syntéza</div>
+    <h2>🎶 Teplý tón (tibetská mísa / flétna)</h2>
+    <p>Vlastní průběh přes <code>createPeriodicWave()</code> s alikvótami (1.&nbsp;harmonická 100&nbsp;%,
+    2.&nbsp;30&nbsp;%, 3.&nbsp;15&nbsp;%…). Dech mění výšku tónu o čistou kvintu a hlasitost.</p>
+    <button data-engine="warm">Start</button>
+    <div class="meter" id="meter-warm"></div>
+  </div>
+
+  <!-- 3. Kombinace -->
+  <div class="card">
+    <div class="tag">3 · Detuned + low-pass</div>
+    <h2>🌫️ Ambientní podmaz (dva rozladěné oscilátory)</h2>
+    <p>Dva trojúhelníkové oscilátory (220 Hz + ~222 Hz) přirozeně fázují. Low-pass ořezává výšky;
+    dech otvírá cutoff a swelluje hlasitost – „tlustý" teplý tón s vnitřním pohybem.</p>
+    <button data-engine="pad">Start</button>
+    <div class="meter" id="meter-pad"></div>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  let ctx = null, master = null;
+  function ensureCtx(){
+    if (ctx) return;
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    master = ctx.createGain();
+    master.gain.value = 0.9;
+    const comp = ctx.createDynamicsCompressor(); // pojistka proti clippingu při součtu
+    master.connect(comp).connect(ctx.destination);
+    master._out = comp;
+  }
+  // krátký smooth setter, ať parametry „neklikají"
+  const set = (param, v, t=0.05) => param.setTargetAtTime(v, ctx.currentTime, t);
+
+  // ---------- Pomocné: růžový šum (Paul Kellet) ----------
+  function pinkNoiseBuffer(seconds=3){
+    const len = Math.floor(ctx.sampleRate * seconds);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
+    for (let i=0;i<len;i++){
+      const w = Math.random()*2-1;
+      b0=0.99886*b0+w*0.0555179; b1=0.99332*b1+w*0.0750759; b2=0.96900*b2+w*0.1538520;
+      b3=0.86650*b3+w*0.3104856; b4=0.55000*b4+w*0.5329522; b5=-0.7616*b5-w*0.0168980;
+      d[i]=(b0+b1+b2+b3+b4+b5+b6+w*0.5362)*0.11; b6=w*0.115926;
+    }
+    return buf;
+  }
+
+  // ====================================================================
+  // ENGINE 1 — Subtraktivní: šum + bandpass (mořská vlna / vítr)
+  // ====================================================================
+  class SeaEngine{
+    start(){
+      this.src = ctx.createBufferSource();
+      this.src.buffer = pinkNoiseBuffer(3);
+      this.src.loop = true;
+
+      this.bp = ctx.createBiquadFilter();
+      this.bp.type = "bandpass";
+      this.bp.frequency.value = 350;
+      this.bp.Q.value = 0.9;
+
+      this.gain = ctx.createGain();
+      this.gain.gain.value = 0;
+
+      this.src.connect(this.bp).connect(this.gain).connect(master);
+      this.src.start();
+      set(this.gain.gain, 0.28, 0.4); // fade-in
+    }
+    update(e){
+      set(this.bp.frequency, 320 + e*1300);          // cutoff nahoru při nádechu
+      set(this.bp.Q, 0.7 + e*0.8);                    // mírně ostřejší na vrcholu
+      set(this.gain.gain, 0.10 + e*0.30);             // swell hlasitosti = příliv/odliv
+      return `cutoff ${(320+e*1300)|0} Hz · Q ${(0.7+e*0.8).toFixed(2)}`;
+    }
+    stop(){
+      set(this.gain.gain, 0, 0.15);
+      const s=this.src; setTimeout(()=>{ try{s.stop();}catch(_){} this.src.disconnect?.(); }, 250);
+    }
+  }
+
+  // ====================================================================
+  // ENGINE 2 — Aditivní: createPeriodicWave (teplý tón)
+  // ====================================================================
+  class WarmEngine{
+    start(){
+      // imag = amplitudy sinusových harmonických (index 0 = DC)
+      const harm = [0, 1, 0.30, 0.15, 0.08, 0.05, 0.03];
+      const real = new Float32Array(harm.length);
+      const imag = new Float32Array(harm);
+      const wave = ctx.createPeriodicWave(real, imag, { disableNormalization:false });
+
+      this.osc = ctx.createOscillator();
+      this.osc.setPeriodicWave(wave);
+      this.osc.frequency.value = 196; // G3
+
+      this.lp = ctx.createBiquadFilter();
+      this.lp.type = "lowpass";
+      this.lp.frequency.value = 1600;
+
+      this.gain = ctx.createGain();
+      this.gain.gain.value = 0;
+
+      this.osc.connect(this.lp).connect(this.gain).connect(master);
+      this.osc.start();
+      set(this.gain.gain, 0.16, 0.4);
+    }
+    update(e){
+      const f = 196 + e*(294-196);                    // G3 → D4 (čistá kvinta)
+      set(this.osc.frequency, f);
+      set(this.lp.frequency, 900 + e*1800);           // s výškou tónu se i rozjasní
+      set(this.gain.gain, 0.08 + e*0.14);
+      return `tón ${f.toFixed(1)} Hz · alikvóty 100/30/15/8 %`;
+    }
+    stop(){
+      set(this.gain.gain, 0, 0.15);
+      const o=this.osc; setTimeout(()=>{ try{o.stop();}catch(_){} }, 250);
+    }
+  }
+
+  // ====================================================================
+  // ENGINE 3 — Detuned oscilátory + low-pass (ambientní podmaz)
+  // ====================================================================
+  class PadEngine{
+    start(){
+      this.o1 = ctx.createOscillator(); this.o1.type="triangle"; this.o1.frequency.value=220;
+      this.o2 = ctx.createOscillator(); this.o2.type="triangle"; this.o2.frequency.value=220;
+      this.o2.detune.value = 14; // ~14 centů rozladění → přirozené fázování („beating")
+
+      this.lp = ctx.createBiquadFilter();
+      this.lp.type = "lowpass";
+      this.lp.frequency.value = 400;
+      this.lp.Q.value = 0.7;
+
+      this.gain = ctx.createGain();
+      this.gain.gain.value = 0;
+
+      this.o1.connect(this.lp); this.o2.connect(this.lp);
+      this.lp.connect(this.gain).connect(master);
+      this.o1.start(); this.o2.start();
+      set(this.gain.gain, 0.22, 0.5);
+    }
+    update(e){
+      set(this.lp.frequency, 260 + e*700);            // dech otvírá filtr (max ~960 Hz)
+      set(this.gain.gain, 0.10 + e*0.16);
+      set(this.o2.detune, 10 + e*10);                 // víc „pohybu" na vrcholu nádechu
+      return `cutoff ${(260+e*700)|0} Hz · detune ${(10+e*10)|0} c`;
+    }
+    stop(){
+      set(this.gain.gain, 0, 0.2);
+      const a=this.o1,b=this.o2; setTimeout(()=>{ try{a.stop();b.stop();}catch(_){} }, 300);
+    }
+  }
+
+  const factories = { sea:SeaEngine, warm:WarmEngine, pad:PadEngine };
+  const active = {}; // jméno → instance
+
+  // ---------- Sdílený „dech" ----------
+  const els = {
+    slider: document.getElementById("breathSlider"),
+    bar: document.getElementById("bar"),
+    phase: document.getElementById("phase"),
+    auto: document.getElementById("autoBreath"),
+    period: document.getElementById("period"),
+    periodVal: document.getElementById("periodVal"),
+  };
+  let t0 = performance.now();
+  els.period.addEventListener("input", ()=> els.periodVal.textContent = (+els.period.value).toFixed(1)+" s");
+  els.slider.addEventListener("input", ()=> { if(!els.auto.checked) {/* ruční */} });
+
+  const easeInOut = p => (1 - Math.cos(Math.PI*Math.max(0,Math.min(1,p))))/2;
+
+  function tick(now){
+    let e, inhaling;
+    if (els.auto.checked){
+      const period = +els.period.value;
+      const phase = ((now - t0)/1000 % period) / period; // 0..1
+      inhaling = phase < 0.5;
+      e = inhaling ? easeInOut(phase*2) : easeInOut(1 - (phase-0.5)*2);
+      els.slider.value = e.toFixed(3);
+    } else {
+      e = +els.slider.value;
+      inhaling = e >= (tick._last ?? 0);
+    }
+    tick._last = e;
+    els.bar.style.width = (e*100).toFixed(1) + "%";
+    els.phase.textContent = inhaling ? "Nádech" : "Výdech";
+
+    for (const name in active){
+      const info = active[name].update(e);
+      const m = document.getElementById("meter-"+name);
+      if (m) m.textContent = info;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  // ---------- Tlačítka ----------
+  document.querySelectorAll("button[data-engine]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      ensureCtx();
+      if (ctx.state === "suspended") ctx.resume();
+      const name = btn.dataset.engine;
+      if (active[name]){
+        active[name].stop(); delete active[name];
+        btn.textContent = "Start"; btn.classList.remove("on");
+      } else {
+        const eng = new factories[name](); eng.start();
+        active[name] = eng;
+        btn.textContent = "Stop"; btn.classList.add("on");
+      }
+    });
+  });
+})();
+</script>
+</body>
+</html>
